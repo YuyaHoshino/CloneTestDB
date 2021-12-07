@@ -3,7 +3,7 @@
 Plugin Name: Clone Test DB
 Plugin URI: https://www.560designs.com/development/clone-test-db.html
 Description: Duplicate the table in another database and optimize it as a test site.
-Version: 1.0.0
+Version: 1.0.1
 Author: Yuya Hoshino
 Author URI: https://www.560designs.com/
 Text Domain: clone-test-db
@@ -139,8 +139,8 @@ class clone_test_db {
 				// 同名のテーブルがあるか確認する
 				if ( !$overwrite ) {
 					while ( $row = $tables->fetch_row() ) {
-						$table_name = "'" . $row[0] . "'";
-						$sql = "SHOW TABLES LIKE $table_name;";
+						$table_name = $row[0];
+						$sql = "SHOW TABLES LIKE '$table_name';";
 						$result2 = $test_db->query( $sql );
 						if ( $result2->num_rows )
 							$this->error[] = esc_html( $row[0] ) . __( ' does exist.', 'clone-test-db' );
@@ -153,15 +153,15 @@ class clone_test_db {
 				if ( !$this->error || $overwrite ) {
 					// まずはそのままコピー
 					while ( $row = $tables->fetch_row() ) {
-						$table_name = "`" . $row[0] . "`";
+						$table_name = $row[0];
 
 						// 同名のテーブルはまず削除する
-						$sql = "DROP TABLE IF EXISTS $test_db_name.$table_name";
+						$sql = "DROP TABLE IF EXISTS `$test_db_name`.`$table_name`";
 						$test_db->query( $sql );
 
-						$sql = "CREATE TABLE IF NOT EXISTS $test_db_name.$table_name LIKE $master_db_name.$table_name";
+						$sql = "CREATE TABLE IF NOT EXISTS `$test_db_name`.`$table_name` LIKE `$master_db_name`.`$table_name`";
 						$test_db->query( $sql );
-						$sql = "INSERT INTO $test_db_name.$table_name SELECT * FROM $master_db_name.$table_name";
+						$sql = "INSERT INTO `$test_db_name`.`$table_name` SELECT * FROM `$master_db_name`.`$table_name`";
 						$test_db->query( $sql );
 					}
 
@@ -171,8 +171,8 @@ class clone_test_db {
 					// Site address が同じなら置換は行わない
 					if ( $test_site_address != get_bloginfo( 'url' ) ) {
 						while ( $row = $tables->fetch_row() ) {
-							$table_name = "`" . $row[0] . "`";
-							if ( $result2 = $test_db->query( "SELECT * FROM $master_db_name.$table_name" ) ) {
+							$table_name = $row[0];
+							if ( $result2 = $test_db->query( "SELECT * FROM `$master_db_name`.`$table_name`" ) ) {
 								while ( $arr = $result2->fetch_array ( MYSQLI_ASSOC ) ) {
 									if ( $str = implode ( $arr ) ) {
 										// 検索ワードが含まれていたら
@@ -185,7 +185,7 @@ class clone_test_db {
 												if ( !$unique_id )
 													$unique_id = (int) $val;
 												if ( strpos ( $val, $search_word ) !== false ) {
-													$sql = "UPDATE $test_db_name.$table_name SET $col_name = ? WHERE $unique_col = ?";
+													$sql = "UPDATE `$test_db_name`.`$table_name` SET $col_name = ? WHERE $unique_col = ?";
 													$stmt = $test_db->prepare ( $sql );
 
 													// 置換
