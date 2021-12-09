@@ -3,7 +3,7 @@
 Plugin Name: Clone Test DB
 Plugin URI: https://www.560designs.com/development/clone-test-db.html
 Description: Duplicate the table in another database and optimize it as a test site.
-Version: 1.0.1
+Version: 1.0.3
 Author: Yuya Hoshino
 Author URI: https://www.560designs.com/
 Text Domain: clone-test-db
@@ -101,6 +101,26 @@ class clone_test_db {
 		return array ( $txt );
 	}
 
+	public function clone_test_db_connect_db( $db_name ) {
+		try {
+			$dsn = 'mysql:dbname=' . $db_name . ';host=' . DB_HOST . ';charset=' . DB_CHARSET;
+			$options = array (
+				PDO::MYSQL_ATTR_INIT_COMMAND => 'SET sql_mode=""'
+			);
+
+			$pdo = new PDO (
+				$dsn,
+				DB_USER,
+				DB_PASSWORD,
+				$options
+			);
+			$pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
+			return $pdo;
+		} catch ( PDOException $e ) {
+			return 'Connection failed: ' . $e->getMessage();
+		}
+	}
+
 	public function clone_test_db_front_page() {
 		$test_site_address = filter_input ( INPUT_POST, 'test_site_address', FILTER_SANITIZE_SPECIAL_CHARS );
 		$test_db_name = filter_input ( INPUT_POST, 'test_db_name', FILTER_SANITIZE_SPECIAL_CHARS );
@@ -123,57 +143,50 @@ class clone_test_db {
 				$replace_word = $test_site_address;
 				$master_db_name = DB_NAME;
 
-				$master_db = new mysqli( DB_HOST, DB_USER, DB_PASSWORD, $master_db_name );
-				$master_db->set_charset( DB_CHARSET );
+				$master_pdo = $this->clone_test_db_connect_db( $master_db_name );
 
-				$test_db = @new mysqli( DB_HOST, DB_USER, DB_PASSWORD, $test_db_name );
-				if ( $test_db->connect_error ) {
+				$test_pdo = $this->clone_test_db_connect_db( $test_db_name );
+				if ( !is_object( $test_pdo ) ) {
 					// 接続状況チェック
-					wp_die( $test_db->connect_error );
+					wp_die( $test_pdo );
 				}
-				$test_db->set_charset( DB_CHARSET );
 
-				$sql = "SHOW TABLES;";
-				$tables = $master_db->query( $sql );
+				$sql = "SHOW TABLES";
+				$tables = $master_pdo->query( $sql );
+				$tables_arr = $tables->fetchAll( PDO::FETCH_NUM );
 
 				// 同名のテーブルがあるか確認する
 				if ( !$overwrite ) {
-					while ( $row = $tables->fetch_row() ) {
+					foreach ( $tables_arr as $row ) {
 						$table_name = $row[0];
-						$sql = "SHOW TABLES LIKE '$table_name';";
-						$result2 = $test_db->query( $sql );
-						if ( $result2->num_rows )
+						$sql = "SHOW TABLES LIKE '$table_name'";
+						$result2 = $test_pdo->query( $sql );
+						if ( $result2->rowCount() )
 							$this->error[] = esc_html( $row[0] ) . __( ' does exist.', 'clone-test-db' );
 					}
 				}
 
-				// ポインタを戻す
-				$tables->data_seek( 0 );
-
 				if ( !$this->error || $overwrite ) {
 					// まずはそのままコピー
-					while ( $row = $tables->fetch_row() ) {
+					foreach ( $tables_arr as $row ) {
 						$table_name = $row[0];
 
 						// 同名のテーブルはまず削除する
 						$sql = "DROP TABLE IF EXISTS `$test_db_name`.`$table_name`";
-						$test_db->query( $sql );
+						$test_pdo->query( $sql );
 
 						$sql = "CREATE TABLE IF NOT EXISTS `$test_db_name`.`$table_name` LIKE `$master_db_name`.`$table_name`";
-						$test_db->query( $sql );
+						$test_pdo->query( $sql );
 						$sql = "INSERT INTO `$test_db_name`.`$table_name` SELECT * FROM `$master_db_name`.`$table_name`";
-						$test_db->query( $sql );
+						$test_pdo->query( $sql );
 					}
-
-					// ポインタを戻す
-					$tables->data_seek( 0 );
 
 					// Site address が同じなら置換は行わない
 					if ( $test_site_address != get_bloginfo( 'url' ) ) {
-						while ( $row = $tables->fetch_row() ) {
+						foreach ( $tables_arr as $row ) {
 							$table_name = $row[0];
-							if ( $result2 = $test_db->query( "SELECT * FROM `$master_db_name`.`$table_name`" ) ) {
-								while ( $arr = $result2->fetch_array ( MYSQLI_ASSOC ) ) {
+							if ( $result2 = $test_pdo->query( "SELECT * FROM `$master_db_name`.`$table_name`" ) ) {
+								while ( $arr = $result2->fetch( PDO::FETCH_ASSOC ) ) {
 									if ( $str = implode ( $arr ) ) {
 										// 検索ワードが含まれていたら
 										if ( strpos ( $str, $search_word ) !== false ) {
@@ -185,13 +198,14 @@ class clone_test_db {
 												if ( !$unique_id )
 													$unique_id = (int) $val;
 												if ( strpos ( $val, $search_word ) !== false ) {
-													$sql = "UPDATE `$test_db_name`.`$table_name` SET $col_name = ? WHERE $unique_col = ?";
-													$stmt = $test_db->prepare ( $sql );
+													$sql = "UPDATE `$table_name` SET $col_name = :val WHERE $unique_col = :id";
+													$stmt = $test_pdo->prepare( $sql );
 
 													// 置換
 													list ( $new_val ) = $this->clone_test_db_replace_rec( $val, $search_word, $replace_word );
 
-													$stmt->bind_param ( 'si', $new_val, $unique_id );
+													$stmt->bindValue( ':val', $new_val );
+													$stmt->bindValue( ':id', $unique_id, PDO::PARAM_INT );
 													$stmt->execute();
 												}
 											}
@@ -203,13 +217,6 @@ class clone_test_db {
 					}
 					$this->updated[] = __( 'Successfully cloned the database!', 'clone-test-db' );
 				}
-
-				// 結果セットを閉じる
-				$tables->close();
-
-				// 切断
-				$master_db->close();
-				$test_db->close();
 			}
 		}
 ?>
@@ -257,9 +264,9 @@ class clone_test_db {
 <?php
 // データベース名をすべて取得する
 $db = new mysqli( DB_HOST, DB_USER, DB_PASSWORD );
-$sql = "SHOW DATABASES;";
-$tables = $db->query( $sql );
-while ( $row = $tables->fetch_row() ) {
+$sql = "SHOW DATABASES";
+$dbs = $db->query( $sql );
+while ( $row = $dbs->fetch_row() ) {
 	// コピー元と同じデータベースは除外
 	if ( DB_NAME == $row[0] )
 		continue;
